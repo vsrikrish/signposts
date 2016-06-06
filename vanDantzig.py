@@ -5,6 +5,7 @@ import math
 import operator
 import functools
 import numpy as np
+import scipy as sp
 from rhodium import *
 
 # function: probability of flooding (assumes stationary flooding frequency)
@@ -20,7 +21,7 @@ def failureLoss(t,             # the current time
                 delta = 0.02): # the discount rate (e.g., interest rate - growth rate)
     return V*pow(1 + delta, -t)
 
-# function: compute investment cost to increase dike height
+# function: compute investment cost to increase dike heightg
 def investment(X,           # the increase in dike height in meters
                I0 = 0,      # the base cost incurred during a dike heightening
                k = 42.01e6): # the per-meter cost of dike heightening
@@ -35,6 +36,7 @@ def fixedRate(t,          # the current time in years,
 
     return t*(eta+subs)
 
+# function: global sea level rise for van Dantzig analysis, based on Lempert et al 2012.
 def pola(t,                 # the current time in years
          a      = 0,        # sea level anomaly at t=0 [m]
          b      = 0.00356,  # initial rate at t=0      [m/a]
@@ -58,7 +60,7 @@ def pola_params(file, nsamples=20000):
         result.append(entry)
         
     return result
-        
+
 # POLA_PARAMS = pola_params("pola_array_beta.txt")
     
 def vanDantzig(X,               # the increase in dike height in meters
@@ -70,8 +72,8 @@ def vanDantzig(X,               # the increase in dike height in meters
                I0 = 0,          # the base cost incurred during a dike heightening
                k = 42.01e6,     # the per-meter cost of dike heightening
                subs = 0.002,    # rate of land subsidence (meter/year)
-               eta = 0.008):    # rate of sea level rise (meter/year)
-    failure_probability = [failureProbability(X, p0, alpha, fixedRate(t, subs, eta) for t in range(T+1)]
+               eta = 0.008):    # rate of sea level rise (meter/year)  
+    failure_probability = [failureProbability(X, p0, alpha, fixedRate(t, subs, eta)) for t in range(T+1)]
     failure_loss = [failureLoss(t, V, delta) for t in range(T+1)]
     total_investment = investment(X, I0, k)
     total_loss = sum([failure_loss[t]*failure_probability[t] for t in range(T+1)])
@@ -88,7 +90,7 @@ def vanDantzigPola(
                alpha = 2.6,   # tunable factor for the failure probability
                V = 2e10,      # the initial value of the land, people, goods, etc.
                delta = 0.02,  # the discount rate (e.g., interest rate - growth rate)
-               I0 = 0,        # the base cost incurred during a dike heightening
+               I0 = 0,        # the base sublime text 3 ucost incurred during a dike heightening
                k = 42.01e6,    # the per-meter cost of dike heightening
                a = 0,         # sea level anomaly at t=0 [m]
                b = 0.00356,   # initial rate at t=0      [m/a]
@@ -128,7 +130,7 @@ def vanDantzigPolaRobust(
         total_investment = investment(X, I0, k)
         total_loss = sum([failure_loss[t]*failure_probability[t] for t in range(T+1)])
         total_cost = total_investment + total_loss
-        total_failure_probability = reduce(operator.mul, [1 - p for p in failure_probability], 1)
+        total_failure_probability = reduce(operator.mul, [p for p in failure_probability], 1)
         average_failure_probability = np.average(failure_probability)
         maximum_failure_probability = np.max(failure_probability)
         results[i][0] = total_investment
@@ -172,13 +174,15 @@ model.parameters = [Parameter("X"),
                     Parameter("V"),
                     Parameter("delta"),
                     Parameter("I0"),
-                    Parameter("k")]
+                    Parameter("k"),
+                    Parameter("subs"),
+                    Parameter("eta")]
 
-model.responses = [Response("TotalInvestment", Response.MINIMIZE),
-                   Response("TotalLoss", Response.MINIMIZE),
-                   Response("TotalCost", Response.INFO)]
-                   #Response("TotalFailureProb", Response.INFO),
-                   #Response("AvgFailureProb", Response.INFO),
+model.responses = [Response("TotalInvestment", Response.INFO),
+                   Response("TotalLoss", Response.INFO),
+                   Response("TotalCost", Response.MINIMIZE),
+                   Response("TotalFailureProb", Response.MINIMIZE)]
+                   #Response("AvgFailureProb", Response.INFO)]
                    #Response("MaxFailureProb", Response.MINIMIZE)]
 
 model.levers = [RealLever("X", 0.0, 5.0)]
@@ -193,23 +197,36 @@ model.levers = [RealLever("X", 0.0, 5.0)]
 #                        RealUncertainty("c_star", 0.0, 0.05),
 #                        RealUncertainty("t_star", 25, 65)]
 
-model.uncertainties = [UniformUncertainty("p0", 0.0, 0.01),
-                       UniformUncertainty("alpha", 2.0, 3.0),
-                       UniformUncertainty("V", 1e10, 10e10),
-                       UniformUncertainty("delta", 0.0, 0.05),
-                       UniformUncertainty("k", 30e6, 50e6)]
+model.uncertainties = [LogNormalUncertainty("p0", math.log(0.0038), 0.25),
+                       NormalUncertainty("alpha", 2.6, 0.1),
+                       NormalUncertainty("V", 1e10, 1e9),
+                       LogNormalUncertainty("delta", math.log(0.02), 0.1),
+                       NormalUncertainty("k", 42.01e6, 4e6),
+                       LogNormalUncertainty("subs",math.log(0.002),0.1),
+                       LogNormalUncertainty("eta",math.log(0.008),0.1)]
 
-output = optimize(model, "NSGAII", 500)
+
+output = optimize(model, "NSGAII", 1000)
 print output
 
 sns.set()
 
-scatter2d(model, output, x="TotalInvestment", y="TotalLoss", c="TotalCost")
+scatter2d(model, output, x="TotalInvestment", y="TotalFailureProb", c="TotalCost")
 plt.show()
 
 parallel_coordinates(model, output, c="TotalCost", colormap="rainbow")
 plt.show()
 
+
+SOWs = sample_lhs(model,100)
+
+robustness = evaluate_robustness(model,output,SOWs)
+
+sns.set()
+
+scatter3d(model,robustness,x="TotalInvestment",y="TotalFailureProb",z="TotalCost",
+  c="Regret Type 1")
+plt.show()
 
 #for i in range(300):
 #    X = i / 100
