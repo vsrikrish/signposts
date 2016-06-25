@@ -13,6 +13,7 @@ def failureProbability(X,           # the increase in dike height in meters
                        p0 = 0.0038, # the failure probability when H=0
                        alpha = 2.6, # tunable factor for the failure probability
                        eta = 0.0):  # total structural sea level change (e.g., sinking dikes, sea level rise) in meters
+    
     return p0*math.exp(-alpha*(X-eta))
 
 # function: compute NPV of losses due to flooding in a given year
@@ -22,10 +23,12 @@ def failureLoss(t,             # the current time
     return V*pow(1 + delta, -t)
 
 # function: compute investment cost to increase dike heightg
-def investment(X,           # the increase in dike height in meters
-               I0 = 0,      # the base cost incurred during a dike heightening
-               k = 42.01e6): # the per-meter cost of dike heightening
-    return I0 + k*X
+def investment(X,             # the increase in dike height in meters
+               t,             # the current time in years
+               I0 = 0,        # the base cost incurred during a dike heightening
+               k = 42.01e6,   # the per-meter cost of dike heightening
+               delta = 0.02): # the discount rate (e.g., interest rate - growth rate)
+    return (I0 + k*X)*pow(1 + delta, -t)
 
 
 # function: compute modifier to effective dike height due to land subsdience and 
@@ -43,25 +46,27 @@ def pola(t,                 # the current time in years
          c      = 1.19e-5,  # acceleration             [m/a^2]
          c_star = 0.01724,  # abrupt increase of rate  [m/a]
          t_star = 55):      # timing of abrupt rate increase
-    return a + b*t + c*(t**2) + c_star * ((math.copysign(1, t - t_star) + 1) / 2) * (t - t_star)
+
+    eta = a + b*t + c*(t**2) + c_star * ((math.copysign(1, t - t_star) + 1) / 2) * (t - t_star)
+    return eta
 
 def pola_params(file, nsamples=20000):
-    content = np.loadtxt(file)
+    content = np.loadtxt(file,skiprows=1)
     sampled_rows = np.random.choice(content.shape[0], nsamples, replace=True)
     result = []
     
     for row in sampled_rows:
         entry = {}
-        entry["init_gsl_anomaly"] = 0.0                            # sl compared to 2000
-        entry["init_gsl_rate"] = content[row][2] / 1000.0          # mm  -> m
-        entry["gsl_acceleration"] = content[row][3] / 1000.0       # mm  -> m
-        entry["timing_abrupt_increase"] = content[row][4] - 2000.0 # yrs -> yrs from y0
-        entry["abrupt_rate_increase"] = content[row][5] / 1000.0   # mm  -> m
+        entry["a"] = content[row][0] / 1000.0                           # sl compared to 2000
+        entry["b"] = content[row][1] / 1000.0          # mm  -> m
+        entry["c"] = content[row][2] / 1000.0       # mm  -> m
+        entry["t_star"] = content[row][3] - 2000.0 # yrs -> yrs from y0
+        entry["c_star"] = content[row][4] / 1000.0   # mm  -> m
         result.append(entry)
-        
+
     return result
 
-# POLA_PARAMS = pola_params("pola_array_beta.txt")
+POLA_PARAMS = pola_params("data/array_beta.txt")
     
 def vanDantzig(X,               # the increase in dike height in meters
                T = 75,          # the planning horizon in years
@@ -73,9 +78,10 @@ def vanDantzig(X,               # the increase in dike height in meters
                k = 42.01e6,     # the per-meter cost of dike heightening
                subs = 0.002,    # rate of land subsidence (meter/year)
                eta = 0.008):    # rate of sea level rise (meter/year)  
-    failure_probability = [failureProbability(X, p0, alpha, fixedRate(t, subs, eta)) for t in range(T+1)]
+    failure_probability = [failureProbability(sum(X[:t]), p0, alpha, fixedRate(t, subs, eta)) for t in range(T+1)]
     failure_loss = [failureLoss(t, V, delta) for t in range(T+1)]
-    total_investment = investment(X, I0, k)
+    yearly_investment = np.array([investment(X[t-1], t, I0, k, delta) for t in range(T+1)])
+    total_investment = yearly_investment.sum()
     total_loss = sum([failure_loss[t]*failure_probability[t] for t in range(T+1)])
     total_cost = total_investment + total_loss
     total_failure_probability = reduce(operator.mul, [1 - p for p in failure_probability], 1)
@@ -91,15 +97,18 @@ def vanDantzigPola(
                V = 2e10,      # the initial value of the land, people, goods, etc.
                delta = 0.02,  # the discount rate (e.g., interest rate - growth rate)
                I0 = 0,        # the base sublime text 3 ucost incurred during a dike heightening
-               k = 42.01e6,    # the per-meter cost of dike heightening
+               k = 42.01e6,   # the per-meter cost of dike heightening
+#               subs = 0.002,  # rate of land subsidence (meter/year)
+#               eta = 0.008,   # rate of sea level rise (meter/year)  
                a = 0,         # sea level anomaly at t=0 [m]
                b = 0.00356,   # initial rate at t=0      [m/a]
                c = 1.19e-5,   # acceleration             [m/a^2]
                c_star = 0.01724, # abrupt increase of rate  [m/a]
                t_star = 55):     # timing of abrupt rate increase
-    failure_probability = [failureProbability(X, p0, alpha, pola(t, a, b, c, c_star, t_star)) for t in range(T+1)]
+    failure_probability = [failureProbability(sum(X[:t]), p0, alpha, pola(t, a, b, c, c_star, t_star)) for t in range(T+1)]
     failure_loss = [failureLoss(t, V, delta) for t in range(T+1)]
-    total_investment = investment(X, I0, k)
+    yearly_investment = np.array([investment(X[t-1], t, I0, k, delta) for t in range(T+1)])
+    total_investment = yearly_investment.sum()
     total_loss = sum([failure_loss[t]*failure_probability[t] for t in range(T+1)])
     total_cost = total_investment + total_loss
     total_failure_probability = reduce(operator.mul, [1 - p for p in failure_probability], 1)
@@ -151,7 +160,7 @@ def vanDantzigPolaRobust(
     print "Done"
     return np.mean(results, axis=0)
     
-model = Model(vanDantzig)
+model = Model(vanDantzigPola)
 
 # model.parameters = [Parameter("X"),
 #                     Parameter("T", default_value=75),
@@ -175,17 +184,22 @@ model.parameters = [Parameter("X"),
                     Parameter("delta"),
                     Parameter("I0"),
                     Parameter("k"),
-                    Parameter("subs"),
-                    Parameter("eta")]
+ #                   Parameter("subs"),
+ #                   Parameter("eta"),
+                    Parameter("a"),
+                    Parameter("b"),
+                    Parameter("c"),
+                    Parameter("c_star"),
+                    Parameter("t_star")]
 
 model.responses = [Response("TotalInvestment", Response.INFO),
                    Response("TotalLoss", Response.INFO),
                    Response("TotalCost", Response.MINIMIZE),
-                   Response("TotalFailureProb", Response.MINIMIZE)]
+                   Response("TotalFailureProb", Response.MINIMIZE),
                    #Response("AvgFailureProb", Response.INFO)]
-                   #Response("MaxFailureProb", Response.MINIMIZE)]
+                   Response("MaxFailureProb", Response.INFO)]
 
-model.levers = [RealLever("X", 0.0, 5.0)]
+model.levers = [RealLever("X", 0.0, 2.0, length=75)]
 
 # model.uncertainties = [RealUncertainty("p0", 0.0, 0.01),
 #                        RealUncertainty("alpha", 2.0, 3.0),
@@ -201,32 +215,59 @@ model.uncertainties = [LogNormalUncertainty("p0", math.log(0.0038), 0.25),
                        NormalUncertainty("alpha", 2.6, 0.1),
                        NormalUncertainty("V", 1e10, 1e9),
                        LogNormalUncertainty("delta", math.log(0.02), 0.1),
-                       NormalUncertainty("k", 42.01e6, 4e6),
-                       LogNormalUncertainty("subs",math.log(0.002),0.1),
-                       LogNormalUncertainty("eta",math.log(0.008),0.1)]
+                       NormalUncertainty("k", 42.01e6, 4e6)]
+#                       LogNormalUncertainty("subs",math.log(0.002),0.1),
+ #                      LogNormalUncertainty("eta",math.log(0.008),0.1)]
 
+SOWs = sample_lhs(model,100)
 
-output = optimize(model, "NSGAII", 1000)
+for i, SOW in enumerate(SOWs):
+  SOW.update(POLA_PARAMS[random.randrange(len(POLA_PARAMS))])
+
+output = robust_optimize(model, SOWs, "NSGAII", 1000)
+output = output.sort(columns=["TotalInvestment"])
 print output
 
 sns.set()
 
-scatter2d(model, output, x="TotalInvestment", y="TotalFailureProb", c="TotalCost")
-plt.show()
+# scatter2d(model, output, x="TotalInvestment", y="TotalFailureProb", c="TotalCost")
+# plt.show()
 
-parallel_coordinates(model, output, c="TotalCost", colormap="rainbow")
-plt.show()
+# parallel_coordinates(model, output, c="TotalCost", colormap="rainbow")
+# plt.show()
+
+# scatter3d(model,output,x="TotalInvestment",y="MaxFailureProb",z="TotalCost",
+#   c="Regret Type 1")
+# plt.show()
 
 
-SOWs = sample_lhs(model,100)
+policy = output[0]
+result = evaluate(model,policy)
+print "Total Investment:", result["TotalInvestment"]
+print "Total Losses:", result["TotalLoss"]
+print "Total Failure Prob:", result["TotalFailureProb"]
+print "Max Failure Prob:", result["MaxFailureProb"]
 
-robustness = evaluate_robustness(model,output,SOWs)
+SOWs = sample_lhs(model,10000)
 
-sns.set()
+for i, SOW in enumerate(SOWs):
+  SOW.update(POLA_PARAMS[random.randrange(len(POLA_PARAMS))])
 
-scatter3d(model,robustness,x="TotalInvestment",y="TotalFailureProb",z="TotalCost",
-  c="Regret Type 1")
-plt.show()
+results = evaluate(model,update(SOWs,policy))
+classification = results.apply("'Reliable' if MaxFailureProb < 0.001 else 'Unreliable'")
+
+p = Prim(results, classification, include=model.uncertainties.keys(), coi="Reliable")
+box = p.find_box()
+box.show_details()
+fig = box.show_tradeoff()
+
+result = sa(model, "MaxFailureProb", policy=policy, method="sobol", nsamples=10000)
+print(result)
+fig = result.plot()
+
+fig = result.plot_sobol(threshold=0.01)
+
+fig = oat(model, "MaxFailureProb", policy=policy, nsamples=1000)
 
 #for i in range(300):
 #    X = i / 100
